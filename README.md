@@ -2,6 +2,8 @@
 
 # wechat-codex-agent
 
+A WeChat bridge focused on `Codex`.
+
 [简体中文](#zh-cn) | [English](#en)
 
 ---
@@ -10,13 +12,23 @@
 
 ## 简体中文
 
-把微信消息接到本地 AI 编码助手里用。你可以选择把消息转给 `Codex`、`OpenCode` 或 `Claude Code`，然后直接在微信里和它们对话。
+这是一个聚焦于“用微信连接本地 `Codex`”的轻量代理。你可以直接在微信里和本机上的 `Codex` 对话，处理看代码、改脚本、解释报错、继续任务这些典型编码场景。
+
+项目仍兼容 `OpenCode` 和 `Claude Code`，但整体体验和演进方向优先围绕 `Codex` 工作流优化。
 
 ### 适合做什么
 
 - 在微信里让 AI 帮你看代码、写脚本、解释仓库
 - 在外面不方便开 IDE 时，继续和本地编码助手协作
-- 在同一套微信入口下切换不同 provider
+- 让微信成为一个低摩擦的 `Codex` 入口，随时续上当前任务
+
+### 为什么它适合和 Codex 搭配使用
+
+- 直接把微信变成 `Codex` 的移动入口，出门在外也能继续推进本地开发任务
+- 支持会话续接和会话切换，不容易因为聊天式输入把上下文打散
+- 会自动合并连续短消息，减少微信碎片输入对 `Codex` 推理节奏的干扰
+- 优先走 `Codex app-server`，不可用时自动回退到 `codex exec`，兼顾体验和稳定性
+- 本地运行、直接连接你的代码仓库和 CLI，适合真实开发场景，不是纯聊天机器人包装
 
 ### 运行前准备
 
@@ -120,11 +132,17 @@ claude --dangerously-load-development-channels server:wechat
 
 ### 说明
 
+- 项目默认围绕 `Codex` 体验优化，`OpenCode` 和 `Claude Code` 作为兼容选项保留
 - `Codex` 和 `OpenCode` 都是本地 CLI 方式运行
 - `Claude Code` 使用官方 Channels 模式
 - 微信登录凭据默认保存在用户目录下
 - 同一时间只建议保留一个运行中的实例
 - 会话命令设计参考了 [chenhg5/cc-connect](https://github.com/chenhg5/cc-connect) 提供的部分思路
+
+### 致谢
+
+本项目基于原始仓库 [sitarua/wechat-agent-channel](https://github.com/sitarua/wechat-agent-channel) 演进而来。
+感谢原作者提供的基础实现和思路，让这个面向 `Codex` 的版本可以在此基础上继续收敛和优化。
 
 [回到顶部](#top)
 
@@ -134,13 +152,23 @@ claude --dangerously-load-development-channels server:wechat
 
 ## English
 
-Use WeChat as a front end for local coding agents. You can route messages to `Codex`, `OpenCode`, or `Claude Code` and talk to them directly from WeChat.
+This project is a lightweight bridge focused on connecting WeChat to local `Codex`. It lets you talk to the `Codex` running on your machine directly from WeChat for real coding tasks such as reading code, fixing scripts, explaining errors, and continuing active work away from your IDE.
+
+It still supports `OpenCode` and `Claude Code`, but the primary product direction and UX are optimized around the `Codex` workflow.
 
 ### What it is for
 
 - Ask coding questions from WeChat
 - Continue working with your local agent when you are away from your IDE
-- Switch between multiple coding providers behind the same WeChat entry point
+- Use WeChat as a low-friction mobile entry point into `Codex`
+
+### Why it works well with Codex
+
+- It turns WeChat into a practical front end for the `Codex` already installed on your machine
+- Session continuation and session switching make long-running coding threads easier to keep coherent
+- Short consecutive messages are batched before being sent, which reduces fragmented WeChat input
+- It prefers `Codex app-server` and falls back to `codex exec` automatically when needed
+- Everything runs locally against your real repo and tooling, so it is suitable for actual development work
 
 ### Requirements
 
@@ -244,11 +272,17 @@ The Chinese commands are translated into the matching English intent internally 
 
 ### Notes
 
+- The project is primarily optimized for `Codex`, with `OpenCode` and `Claude Code` kept for compatibility
 - `Codex` and `OpenCode` run through their local CLIs
 - `Claude Code` uses the official Channels flow
 - WeChat credentials are stored in your user directory by default
 - It is best to keep only one running instance at a time
 - The session command UX was partly inspired by [chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)
+
+### Acknowledgements
+
+This project evolved from the original repository [sitarua/wechat-agent-channel](https://github.com/sitarua/wechat-agent-channel).
+Thanks to the original author for the foundation and ideas that made this Codex-focused version possible.
 
 [Back to top](#top)
 
