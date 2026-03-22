@@ -4,6 +4,22 @@
 
 License: MIT
 
+## 获取项目
+
+GitHub:
+
+```bash
+git clone https://github.com/sitarua/wechat-agent-channel.git
+cd wechat-agent-channel
+```
+
+Gitee:
+
+```bash
+git clone https://gitee.com/zywoo121/wechat-agent-channel.git
+cd wechat-agent-channel
+```
+
 规则很简单：
 - 消息里包含 `codex`，走 Codex
 - 其他消息，走 Claude Code
