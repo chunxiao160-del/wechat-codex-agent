@@ -92,6 +92,23 @@ def main():
     task_queue = queue.Queue()
     _create_worker(task_queue)
 
+    def send_provider_result(provider, sender_id, result, context_token=None):
+        sender = sender_id.split("@")[0]
+        ctx = context_token or context_token_cache.get(sender_id)
+        if not ctx:
+            log(f"[{provider}] 已拿到结果，但无法回复 {sender}：缺少 context_token")
+            return
+
+        response = wechat_client.send_message(sender_id, ctx, result[:1000])
+        message_id = None
+        if isinstance(response, dict):
+            message_id = response.get("message_id") or response.get("msg_id")
+
+        if message_id:
+            log(f"[{provider}] 已回复 {sender}，message_id={message_id}")
+        else:
+            log(f"[{provider}] 已回复 {sender}，sendMessage 返回: {response}")
+
     get_updates_buf = ""
     consecutive_failures = 0
     if SYNC_BUF_FILE.exists():
@@ -147,29 +164,29 @@ def main():
                 context_token = msg.get("context_token")
                 if context_token:
                     context_token_cache[sender_id] = context_token
+                else:
+                    log(f"收到消息但缺少 context_token: from={sender_id.split('@')[0]}，后续可能无法自动回复")
 
                 log(f"收到消息: from={sender_id.split('@')[0]} text={text[:60]}")
 
                 if default_provider == "codex":
 
-                    def codex_task(sender_id=sender_id, text=text):
+                    def codex_task(sender_id=sender_id, text=text, context_token=context_token):
                         log(f"[codex] 处理来自 {sender_id.split('@')[0]} 的消息...")
                         log("[codex] 已转交 Codex，会在拿到结果后自动回复微信")
                         result = codex_runner.run(sender_id, text)
-                        ctx = context_token_cache.get(sender_id)
-                        if ctx:
-                            wechat_client.send_message(ctx, result[:1000])
+                        log(f"[codex] 已收到结果，准备回复 {sender_id.split('@')[0]}")
+                        send_provider_result("codex", sender_id, result, context_token=context_token)
 
                     task_queue.put(codex_task)
                 elif default_provider == "opencode":
 
-                    def opencode_task(sender_id=sender_id, text=text):
+                    def opencode_task(sender_id=sender_id, text=text, context_token=context_token):
                         log(f"[opencode] 处理来自 {sender_id.split('@')[0]} 的消息...")
                         log("[opencode] 已转交 OpenCode，会在拿到结果后自动回复微信")
                         result = opencode_runner.run(sender_id, text)
-                        ctx = context_token_cache.get(sender_id)
-                        if ctx:
-                            wechat_client.send_message(ctx, result[:1000])
+                        log(f"[opencode] 已收到结果，准备回复 {sender_id.split('@')[0]}")
+                        send_provider_result("opencode", sender_id, result, context_token=context_token)
 
                     task_queue.put(opencode_task)
                 else:

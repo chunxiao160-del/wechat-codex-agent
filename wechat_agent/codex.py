@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import json
 import os
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -124,7 +125,19 @@ class CodexRunner:
 
     def _resolve_command(self):
         override = os.environ.get("CODEX_BIN", "").strip()
-        return override if override else "codex"
+        if override:
+            return override
+
+        candidates = ["codex"]
+        if os.name == "nt":
+            candidates = ["codex.cmd", "codex.exe", "codex"]
+
+        for candidate in candidates:
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+
+        return "codex"
 
     def _base_args(self):
         args = [
@@ -161,6 +174,17 @@ class CodexRunner:
         if existing_thread_id:
             args.extend(["resume", existing_thread_id])
         args.extend(["--skip-git-repo-check", "--json", self._build_prompt(user_message, fresh_session)])
+        log(
+            "[codex] 启动命令: "
+            + json.dumps(
+                {
+                    "cmd": args[0],
+                    "resume": bool(existing_thread_id),
+                    "cwd": str(Path.cwd()),
+                },
+                ensure_ascii=False,
+            )
+        )
 
         process = subprocess.Popen(
             args,

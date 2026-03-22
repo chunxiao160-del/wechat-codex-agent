@@ -140,7 +140,7 @@ class McpBridge:
                     return
 
                 try:
-                    self.wechat_client.send_message(context_token, text[:1000])
+                    self.wechat_client.send_message(sender_id, context_token, text[:1000])
                     result = {"content": [{"type": "text", "text": "sent"}]}
                 except Exception as err:
                     result = {"content": [{"type": "text", "text": f"send failed: {err}"}]}
