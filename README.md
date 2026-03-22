@@ -116,6 +116,7 @@ claude --dangerously-load-development-channels server:wechat
 - `Claude Code` 使用官方 Channels 模式
 - 微信登录凭据默认保存在用户目录下
 - 同一时间只建议保留一个运行中的实例
+- 会话命令设计参考了 [chenhg5/cc-connect](https://github.com/chenhg5/cc-connect) 提供的部分思路
 
 [回到顶部](#top)
 
@@ -231,6 +232,7 @@ The Chinese commands are translated into the matching English intent internally 
 - `Claude Code` uses the official Channels flow
 - WeChat credentials are stored in your user directory by default
 - It is best to keep only one running instance at a time
+- The session command UX was partly inspired by [chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)
 
 [Back to top](#top)
 
