@@ -92,6 +92,18 @@ claude --dangerously-load-development-channels server:wechat
 
 如果你在初始化时已经选了默认 provider，就不需要在消息里额外写前缀。
 
+### 会话命令
+
+同一个微信用户默认会续接当前会话。你也可以像 `cc-connect` 一样直接在微信里管理会话：
+
+- `/new` 或 `新任务`：创建并切换到一个新会话
+- `/new 重构支付` 或 `新建会话 重构支付`：创建带名字的新会话
+- `/list` 或 `会话列表`：查看当前用户的会话列表
+- `/current` 或 `当前会话`：查看当前正在使用的会话
+- `/switch 2` 或 `切换会话 2`：切换到某个会话
+
+这些中文命令会在内部转成对应的英文语义，不会被发送给 provider。
+
 ### 可选环境变量
 
 - `BOT_TOKEN`
@@ -194,6 +206,18 @@ Examples:
 - `What does this error mean?`
 
 If you already selected a default provider during setup, you do not need to add any provider prefix in the message.
+
+### Session Commands
+
+Messages from the same WeChat user continue the current session by default. You can also manage sessions directly from WeChat:
+
+- `/new` or `新任务`: create and switch to a new session
+- `/new payment-refactor` or `新建会话 payment-refactor`: create a named session
+- `/list` or `会话列表`: list sessions for the current user
+- `/current` or `当前会话`: show the active session
+- `/switch 2` or `切换会话 2`: switch to a session by index or name
+
+The Chinese commands are translated into the matching English intent internally and are not forwarded to the provider.
 
 ### Optional environment variables
 

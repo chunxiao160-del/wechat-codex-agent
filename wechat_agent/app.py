@@ -24,6 +24,39 @@ from .util import log, sleep_ms
 from .wechat import WechatClient, extract_text
 
 
+SESSION_COMMAND_ALIASES = {
+    "new": ["/new", "/新建", "/新任务", "新建会话", "新任务", "新会话", "开始新任务"],
+    "list": ["/list", "/列表", "/会话列表", "会话列表", "列出会话"],
+    "current": ["/current", "/当前", "/当前会话", "当前会话"],
+    "switch": ["/switch", "/切换", "/切换会话", "切换会话"],
+}
+
+
+def _parse_session_command(text):
+    stripped = str(text or "").strip()
+    if not stripped:
+        return None
+
+    for action, aliases in SESSION_COMMAND_ALIASES.items():
+        for alias in aliases:
+            if stripped == alias:
+                return {"action": action, "arg": ""}
+            for separator in (" ", ":", "："):
+                prefix = f"{alias}{separator}"
+                if stripped.startswith(prefix):
+                    return {"action": action, "arg": stripped[len(prefix):].strip()}
+    return None
+
+
+def _format_session_summary(session, index=None):
+    if not session:
+        return "暂无会话"
+    prefix = f"{index}. " if index is not None else ""
+    marker = " [当前]" if session.get("current") else ""
+    state = "未开始" if not session.get("engineId") else "已开始"
+    return f"{prefix}{session.get('name')}{marker} ({state})"
+
+
 def _register_exit_handlers(lock):
     atexit.register(lock.release)
 
@@ -109,6 +142,57 @@ def main():
         else:
             log(f"[{provider}] 已回复 {sender}，sendMessage 返回: {response}")
 
+    def handle_session_command(sender_id, text, context_token):
+        parsed = _parse_session_command(text)
+        if not parsed:
+            return False
+
+        runner = None
+        provider_label = default_provider
+        if default_provider == "codex":
+            runner = codex_runner
+        elif default_provider == "opencode":
+            runner = opencode_runner
+
+        if runner is None:
+            send_provider_result("system", sender_id, "当前 provider 不支持会话命令。", context_token=context_token)
+            return True
+
+        action = parsed["action"]
+        arg = parsed["arg"]
+
+        if action == "new":
+            session = runner.create_session(sender_id, name=arg or None)
+            reply = f"已创建新会话：{session['name']}\n下一条普通消息会在这个会话里开始。"
+        elif action == "list":
+            sessions = runner.list_sessions(sender_id)
+            if not sessions:
+                reply = "暂无会话。下一条普通消息会自动创建默认会话。"
+            else:
+                lines = ["会话列表："]
+                for index, session in enumerate(sessions, start=1):
+                    lines.append(_format_session_summary(session, index=index))
+                reply = "\n".join(lines)
+        elif action == "current":
+            session = runner.get_current_session(sender_id)
+            if not session:
+                reply = "当前还没有会话。下一条普通消息会自动创建默认会话。"
+            else:
+                reply = f"当前会话：{_format_session_summary(session)}"
+        else:
+            if not arg:
+                reply = "请提供要切换的会话编号或名称，例如：/switch 2 或 切换会话 新任务"
+            else:
+                session = runner.switch_session(sender_id, arg)
+                if not session:
+                    reply = f"未找到会话：{arg}"
+                else:
+                    reply = f"已切换到会话：{session['name']}\n下一条普通消息会继续这个会话。"
+
+        log(f"[session] {provider_label} command handled for {sender_id.split('@')[0]}: {action} {arg}".strip())
+        send_provider_result("session", sender_id, reply, context_token=context_token)
+        return True
+
     get_updates_buf = ""
     consecutive_failures = 0
     if SYNC_BUF_FILE.exists():
@@ -168,6 +252,9 @@ def main():
                     log(f"收到消息但缺少 context_token: from={sender_id.split('@')[0]}，后续可能无法自动回复")
 
                 log(f"收到消息: from={sender_id.split('@')[0]} text={text[:60]}")
+
+                if handle_session_command(sender_id, text, context_token):
+                    continue
 
                 if default_provider == "codex":
 

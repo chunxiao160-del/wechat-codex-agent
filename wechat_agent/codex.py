@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from .constants import DEFAULT_CODEX_TIMEOUT_MS
+from .session_store import MultiSessionStore
 from .util import ensure_parent, load_json, log
 
 
@@ -100,7 +101,7 @@ class CodexRunner:
         self._lock = threading.Lock()
         self.timeout_ms = self._get_timeout_ms()
         self.model = os.environ.get("CODEX_MODEL", "").strip()
-        self.thread_store = self._load_thread_store()
+        self.session_store = MultiSessionStore(self.store_file)
 
     def _get_timeout_ms(self):
         raw = os.environ.get("CODEX_TURN_TIMEOUT_MS", "").strip()
@@ -111,17 +112,6 @@ class CodexRunner:
             return value if value > 0 else DEFAULT_CODEX_TIMEOUT_MS
         except ValueError:
             return DEFAULT_CODEX_TIMEOUT_MS
-
-    def _load_thread_store(self):
-        parsed = load_json(self.store_file)
-        return parsed if isinstance(parsed, dict) else {}
-
-    def _save_thread_store(self):
-        ensure_parent(self.store_file)
-        self.store_file.write_text(
-            json.dumps(self.thread_store, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
 
     def _resolve_command(self):
         override = os.environ.get("CODEX_BIN", "").strip()
@@ -249,8 +239,8 @@ class CodexRunner:
 
         if accumulator.thread_id:
             with self._lock:
-                self.thread_store[user_id] = accumulator.thread_id
-                self._save_thread_store()
+                self.session_store.set_current_engine_id(user_id, accumulator.thread_id)
+                self.session_store.save()
 
         if return_code == 0 and result_text:
             return result_text
@@ -264,7 +254,9 @@ class CodexRunner:
         raise RuntimeError(error_message or f"codex 返回非零退出码: {return_code}")
 
     def run(self, user_id, user_message):
-        existing_thread_id = self.thread_store.get(user_id)
+        with self._lock:
+            existing_thread_id = self.session_store.get_current_engine_id(user_id, create_if_missing=True)
+            self.session_store.save()
         try:
             return self._run_once(user_id, user_message, existing_thread_id=existing_thread_id)
         except subprocess.TimeoutExpired:
@@ -274,8 +266,8 @@ class CodexRunner:
             if existing_thread_id:
                 log(f"[codex] 续用会话失败，改为新会话重试: {first_error}")
                 with self._lock:
-                    self.thread_store.pop(user_id, None)
-                    self._save_thread_store()
+                    self.session_store.clear_current_engine_id(user_id)
+                    self.session_store.save()
                 try:
                     return self._run_once(user_id, user_message, existing_thread_id=None)
                 except subprocess.TimeoutExpired:
@@ -284,3 +276,24 @@ class CodexRunner:
                 except Exception as second_error:
                     return f"❌ Codex 执行失败：{second_error}"
             return f"❌ Codex 执行失败：{first_error}"
+
+    def create_session(self, user_id, name=None):
+        with self._lock:
+            session = self.session_store.create_session(user_id, name=name)
+            self.session_store.save()
+            return session
+
+    def list_sessions(self, user_id):
+        with self._lock:
+            return self.session_store.list_sessions(user_id)
+
+    def get_current_session(self, user_id):
+        with self._lock:
+            return self.session_store.get_current_session(user_id, create_if_missing=False)
+
+    def switch_session(self, user_id, target):
+        with self._lock:
+            session = self.session_store.switch_session(user_id, target)
+            if session:
+                self.session_store.save()
+            return session

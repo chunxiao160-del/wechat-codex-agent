@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 from .constants import DEFAULT_OPENCODE_TIMEOUT_MS
+from .session_store import MultiSessionStore
 from .util import ensure_parent
 
 
@@ -15,7 +16,7 @@ class OpenCodeRunner:
         self._lock = threading.Lock()
         self.timeout_ms = self._get_timeout_ms()
         self.model = os.environ.get("OPENCODE_MODEL", "").strip()
-        self.session_store = self._load_session_store()
+        self.session_store = MultiSessionStore(self.store_file)
 
     def _get_timeout_ms(self):
         raw = os.environ.get("OPENCODE_TURN_TIMEOUT_MS", "").strip()
@@ -26,21 +27,6 @@ class OpenCodeRunner:
             return value if value > 0 else DEFAULT_OPENCODE_TIMEOUT_MS
         except ValueError:
             return DEFAULT_OPENCODE_TIMEOUT_MS
-
-    def _load_session_store(self):
-        try:
-            if not self.store_file.exists():
-                return {}
-            return json.loads(self.store_file.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-
-    def _save_session_store(self):
-        ensure_parent(self.store_file)
-        self.store_file.write_text(
-            json.dumps(self.session_store, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
 
     def _resolve_command(self):
         override = os.environ.get("OPENCODE_BIN", "").strip()
@@ -96,8 +82,8 @@ class OpenCodeRunner:
 
         if next_session_id:
             with self._lock:
-                self.session_store[user_id] = next_session_id
-                self._save_session_store()
+                self.session_store.set_current_engine_id(user_id, next_session_id)
+                self.session_store.save()
 
         result_text = "".join(text_parts).strip()
         if completed.returncode == 0 and result_text:
@@ -113,7 +99,9 @@ class OpenCodeRunner:
         raise RuntimeError(error_message or f"opencode 返回非零退出码: {completed.returncode}")
 
     def run(self, user_id, user_message):
-        session_id = self.session_store.get(user_id)
+        with self._lock:
+            session_id = self.session_store.get_current_engine_id(user_id, create_if_missing=True)
+            self.session_store.save()
         try:
             return self._run_once(user_id, user_message, session_id=session_id)
         except subprocess.TimeoutExpired:
@@ -124,8 +112,8 @@ class OpenCodeRunner:
         except Exception as first_error:
             if session_id:
                 with self._lock:
-                    self.session_store.pop(user_id, None)
-                    self._save_session_store()
+                    self.session_store.clear_current_engine_id(user_id)
+                    self.session_store.save()
                 try:
                     return self._run_once(user_id, user_message, session_id=None)
                 except subprocess.TimeoutExpired:
@@ -136,6 +124,27 @@ class OpenCodeRunner:
                 except Exception as second_error:
                     return f"❌ OpenCode 执行失败：{second_error}"
             return f"❌ OpenCode 执行失败：{first_error}"
+
+    def create_session(self, user_id, name=None):
+        with self._lock:
+            session = self.session_store.create_session(user_id, name=name)
+            self.session_store.save()
+            return session
+
+    def list_sessions(self, user_id):
+        with self._lock:
+            return self.session_store.list_sessions(user_id)
+
+    def get_current_session(self, user_id):
+        with self._lock:
+            return self.session_store.get_current_session(user_id, create_if_missing=False)
+
+    def switch_session(self, user_id, target):
+        with self._lock:
+            session = self.session_store.switch_session(user_id, target)
+            if session:
+                self.session_store.save()
+            return session
 
     @staticmethod
     def _extract_error_message(raw):
