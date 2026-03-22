@@ -1,4 +1,6 @@
 import atexit
+from collections import deque
+import os
 import queue
 import signal
 import threading
@@ -7,7 +9,14 @@ import sys
 from .codex import CodexRunner
 from .mcp import McpBridge
 from .opencode import OpenCodeRunner
-from .constants import BACKOFF_DELAY_MS, MAX_CONSECUTIVE_FAILURES, RETRY_DELAY_MS
+from .constants import (
+    BACKOFF_DELAY_MS,
+    DEFAULT_MESSAGE_BATCH_CHAR_LIMIT,
+    DEFAULT_MESSAGE_BATCH_WINDOW_MS,
+    DEFAULT_TASK_WORKERS,
+    MAX_CONSECUTIVE_FAILURES,
+    RETRY_DELAY_MS,
+)
 from .lock import SingleInstanceLock
 from .state import (
     CODEX_THREAD_STORE_FILE,
@@ -90,7 +99,20 @@ def _log_startup_state():
         log("⚠️  当前默认 provider 是 claude。请使用 `claude --dangerously-load-development-channels server:wechat` 启动。")
 
 
-def _create_worker(task_queue):
+def _read_int_env(name, default, *, minimum=None):
+    raw = str(os.environ.get(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
+
+
+def _create_worker(task_queue, worker_count=1):
     def worker():
         while True:
             task = task_queue.get()
@@ -101,7 +123,8 @@ def _create_worker(task_queue):
             finally:
                 task_queue.task_done()
 
-    threading.Thread(target=worker, name="wechat-worker", daemon=True).start()
+    for index in range(max(1, worker_count)):
+        threading.Thread(target=worker, name=f"wechat-worker-{index + 1}", daemon=True).start()
 
 
 def main():
@@ -123,7 +146,66 @@ def main():
     mcp_bridge.start()
 
     task_queue = queue.Queue()
-    _create_worker(task_queue)
+    worker_count = _read_int_env("WECHAT_AGENT_WORKERS", DEFAULT_TASK_WORKERS, minimum=1)
+    batch_window_ms = _read_int_env(
+        "WECHAT_AGENT_BATCH_WINDOW_MS",
+        DEFAULT_MESSAGE_BATCH_WINDOW_MS,
+        minimum=0,
+    )
+    batch_char_limit = _read_int_env(
+        "WECHAT_AGENT_BATCH_CHAR_LIMIT",
+        DEFAULT_MESSAGE_BATCH_CHAR_LIMIT,
+        minimum=1,
+    )
+    _create_worker(task_queue, worker_count=worker_count)
+
+    sender_lock = threading.Lock()
+    sender_states = {}
+
+    def get_sender_state(sender_id):
+        state = sender_states.get(sender_id)
+        if state is not None:
+            return state
+        state = {
+            "active": False,
+            "queue": deque(),
+            "pending_texts": [],
+            "pending_context_token": None,
+            "timer": None,
+        }
+        sender_states[sender_id] = state
+        return state
+
+    def cancel_timer_locked(state):
+        timer = state.get("timer")
+        state["timer"] = None
+        if timer:
+            timer.cancel()
+
+    def dispatch_next_locked(sender_id, state):
+        if state["active"] or not state["queue"]:
+            return
+
+        task = state["queue"].popleft()
+        state["active"] = True
+
+        def wrapped_task(sender_id=sender_id, task=task):
+            try:
+                task()
+            finally:
+                with sender_lock:
+                    next_state = sender_states.get(sender_id)
+                    if not next_state:
+                        return
+                    next_state["active"] = False
+                    dispatch_next_locked(sender_id, next_state)
+
+        task_queue.put(wrapped_task)
+
+    def enqueue_sender_task_locked(sender_id, task):
+        state = get_sender_state(sender_id)
+        state["queue"].append(task)
+        dispatch_next_locked(sender_id, state)
 
     def send_provider_result(provider, sender_id, result, context_token=None):
         sender = sender_id.split("@")[0]
@@ -142,11 +224,7 @@ def main():
         else:
             log(f"[{provider}] 已回复 {sender}，sendMessage 返回: {response}")
 
-    def handle_session_command(sender_id, text, context_token):
-        parsed = _parse_session_command(text)
-        if not parsed:
-            return False
-
+    def build_session_task(sender_id, parsed, context_token):
         runner = None
         provider_label = default_provider
         if default_provider == "codex":
@@ -154,43 +232,165 @@ def main():
         elif default_provider == "opencode":
             runner = opencode_runner
 
-        if runner is None:
-            send_provider_result("system", sender_id, "当前 provider 不支持会话命令。", context_token=context_token)
-            return True
-
         action = parsed["action"]
         arg = parsed["arg"]
 
-        if action == "new":
-            session = runner.create_session(sender_id, name=arg or None)
-            reply = f"已创建新会话：{session['name']}\n下一条普通消息会在这个会话里开始。"
-        elif action == "list":
-            sessions = runner.list_sessions(sender_id)
-            if not sessions:
-                reply = "暂无会话。下一条普通消息会自动创建默认会话。"
-            else:
-                lines = ["会话列表："]
-                for index, session in enumerate(sessions, start=1):
-                    lines.append(_format_session_summary(session, index=index))
-                reply = "\n".join(lines)
-        elif action == "current":
-            session = runner.get_current_session(sender_id)
-            if not session:
-                reply = "当前还没有会话。下一条普通消息会自动创建默认会话。"
-            else:
-                reply = f"当前会话：{_format_session_summary(session)}"
-        else:
-            if not arg:
-                reply = "请提供要切换的会话编号或名称，例如：/switch 2 或 切换会话 新任务"
-            else:
-                session = runner.switch_session(sender_id, arg)
-                if not session:
-                    reply = f"未找到会话：{arg}"
-                else:
-                    reply = f"已切换到会话：{session['name']}\n下一条普通消息会继续这个会话。"
+        def task():
+            if runner is None:
+                send_provider_result("system", sender_id, "当前 provider 不支持会话命令。", context_token=context_token)
+                return
 
-        log(f"[session] {provider_label} command handled for {sender_id.split('@')[0]}: {action} {arg}".strip())
-        send_provider_result("session", sender_id, reply, context_token=context_token)
+            if action == "new":
+                session = runner.create_session(sender_id, name=arg or None)
+                reply = f"已创建新会话：{session['name']}\n下一条普通消息会在这个会话里开始。"
+            elif action == "list":
+                sessions = runner.list_sessions(sender_id)
+                if not sessions:
+                    reply = "暂无会话。下一条普通消息会自动创建默认会话。"
+                else:
+                    lines = ["会话列表："]
+                    for index, session in enumerate(sessions, start=1):
+                        lines.append(_format_session_summary(session, index=index))
+                    reply = "\n".join(lines)
+            elif action == "current":
+                session = runner.get_current_session(sender_id)
+                if not session:
+                    reply = "当前还没有会话。下一条普通消息会自动创建默认会话。"
+                else:
+                    reply = f"当前会话：{_format_session_summary(session)}"
+            else:
+                if not arg:
+                    reply = "请提供要切换的会话编号或名称，例如：/switch 2 或 切换会话 新任务"
+                else:
+                    session = runner.switch_session(sender_id, arg)
+                    if not session:
+                        reply = f"未找到会话：{arg}"
+                    else:
+                        reply = f"已切换到会话：{session['name']}\n下一条普通消息会继续这个会话。"
+
+            log(f"[session] {provider_label} command handled for {sender_id.split('@')[0]}: {action} {arg}".strip())
+            send_provider_result("session", sender_id, reply, context_token=context_token)
+
+        return task
+
+    def build_provider_task(sender_id, text, context_token, message_count=1):
+        if default_provider == "codex":
+
+            def task(sender_id=sender_id, text=text, context_token=context_token, message_count=message_count):
+                sender = sender_id.split("@")[0]
+                if message_count > 1:
+                    log(f"[codex] 合并处理来自 {sender} 的 {message_count} 条连续消息...")
+                else:
+                    log(f"[codex] 处理来自 {sender} 的消息...")
+                log("[codex] 已转交 Codex，会在拿到结果后自动回复微信")
+                result = codex_runner.run(sender_id, text)
+                log(f"[codex] 已收到结果，准备回复 {sender}")
+                send_provider_result("codex", sender_id, result, context_token=context_token)
+
+            return task
+        if default_provider == "opencode":
+
+            def task(sender_id=sender_id, text=text, context_token=context_token, message_count=message_count):
+                sender = sender_id.split("@")[0]
+                if message_count > 1:
+                    log(f"[opencode] 合并处理来自 {sender} 的 {message_count} 条连续消息...")
+                else:
+                    log(f"[opencode] 处理来自 {sender} 的消息...")
+                log("[opencode] 已转交 OpenCode，会在拿到结果后自动回复微信")
+                result = opencode_runner.run(sender_id, text)
+                log(f"[opencode] 已收到结果，准备回复 {sender}")
+                send_provider_result("opencode", sender_id, result, context_token=context_token)
+
+            return task
+
+        def task(sender_id=sender_id, text=text):
+            sender = sender_id.split("@")[0]
+            if message_count > 1:
+                log(f"[claude] 合并推送来自 {sender} 的 {message_count} 条连续消息到 Claude Code channel...")
+            else:
+                log(f"[claude] 推送来自 {sender} 的消息到 Claude Code channel...")
+            mcp_bridge.notify_claude_channel(text, sender_id)
+
+        return task
+
+    def flush_pending_messages(sender_id):
+        with sender_lock:
+            state = sender_states.get(sender_id)
+            if not state:
+                return
+            cancel_timer_locked(state)
+            pending_texts = [part for part in state["pending_texts"] if isinstance(part, str) and part.strip()]
+            state["pending_texts"] = []
+            context_token = state.get("pending_context_token")
+            state["pending_context_token"] = None
+            if not pending_texts:
+                return
+            combined_text = "\n".join(pending_texts)
+            enqueue_sender_task_locked(
+                sender_id,
+                build_provider_task(
+                    sender_id,
+                    combined_text,
+                    context_token,
+                    message_count=len(pending_texts),
+                ),
+            )
+
+    def should_batch_message(text, state):
+        if batch_window_ms <= 0:
+            return False
+        if state["active"] or state["queue"] or state["pending_texts"]:
+            return True
+        return len(text) <= batch_char_limit
+
+    def enqueue_user_message(sender_id, text, context_token):
+        stripped = str(text or "").strip()
+        if not stripped:
+            return
+
+        with sender_lock:
+            state = get_sender_state(sender_id)
+            if should_batch_message(stripped, state):
+                state["pending_texts"].append(stripped)
+                if context_token:
+                    state["pending_context_token"] = context_token
+                cancel_timer_locked(state)
+                timer = threading.Timer(batch_window_ms / 1000, flush_pending_messages, args=(sender_id,))
+                timer.daemon = True
+                state["timer"] = timer
+                timer.start()
+                return
+
+            enqueue_sender_task_locked(
+                sender_id,
+                build_provider_task(sender_id, stripped, context_token, message_count=1),
+            )
+
+    def enqueue_session_command(sender_id, text, context_token):
+        parsed = _parse_session_command(text)
+        if not parsed:
+            return False
+
+        with sender_lock:
+            state = get_sender_state(sender_id)
+            if state["pending_texts"]:
+                cancel_timer_locked(state)
+                pending_texts = [part for part in state["pending_texts"] if isinstance(part, str) and part.strip()]
+                state["pending_texts"] = []
+                pending_context_token = state.get("pending_context_token")
+                state["pending_context_token"] = None
+                if pending_texts:
+                    enqueue_sender_task_locked(
+                        sender_id,
+                        build_provider_task(
+                            sender_id,
+                            "\n".join(pending_texts),
+                            pending_context_token,
+                            message_count=len(pending_texts),
+                        ),
+                    )
+
+            enqueue_sender_task_locked(sender_id, build_session_task(sender_id, parsed, context_token))
         return True
 
     get_updates_buf = ""
@@ -204,6 +404,8 @@ def main():
 
     log("开始监听微信消息...")
     log(f"当前默认 provider: {default_provider}")
+    log(f"消息工作线程: {worker_count}")
+    log(f"短消息合并窗口: {batch_window_ms}ms (<= {batch_char_limit} 字)")
 
     while True:
         try:
@@ -253,36 +455,10 @@ def main():
 
                 log(f"收到消息: from={sender_id.split('@')[0]} text={text[:60]}")
 
-                if handle_session_command(sender_id, text, context_token):
+                if enqueue_session_command(sender_id, text, context_token):
                     continue
 
-                if default_provider == "codex":
-
-                    def codex_task(sender_id=sender_id, text=text, context_token=context_token):
-                        log(f"[codex] 处理来自 {sender_id.split('@')[0]} 的消息...")
-                        log("[codex] 已转交 Codex，会在拿到结果后自动回复微信")
-                        result = codex_runner.run(sender_id, text)
-                        log(f"[codex] 已收到结果，准备回复 {sender_id.split('@')[0]}")
-                        send_provider_result("codex", sender_id, result, context_token=context_token)
-
-                    task_queue.put(codex_task)
-                elif default_provider == "opencode":
-
-                    def opencode_task(sender_id=sender_id, text=text, context_token=context_token):
-                        log(f"[opencode] 处理来自 {sender_id.split('@')[0]} 的消息...")
-                        log("[opencode] 已转交 OpenCode，会在拿到结果后自动回复微信")
-                        result = opencode_runner.run(sender_id, text)
-                        log(f"[opencode] 已收到结果，准备回复 {sender_id.split('@')[0]}")
-                        send_provider_result("opencode", sender_id, result, context_token=context_token)
-
-                    task_queue.put(opencode_task)
-                else:
-
-                    def claude_task(sender_id=sender_id, text=text):
-                        log(f"[claude] 推送来自 {sender_id.split('@')[0]} 的消息到 Claude Code channel...")
-                        mcp_bridge.notify_claude_channel(text, sender_id)
-
-                    task_queue.put(claude_task)
+                enqueue_user_message(sender_id, text, context_token)
 
         except KeyboardInterrupt:
             raise

@@ -1,4 +1,5 @@
 node_modules/
 sessions/*.json
+sessions/codex-home/
 __pycache__/
 logs/

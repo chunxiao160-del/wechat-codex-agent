@@ -1,5 +1,5 @@
 {
-  "name": "wechat-agent-channel",
+  "name": "wechat-codex-agent",
   "version": "1.1.0",
   "scripts": {
     "start": "node scripts/run-python.js server.py",

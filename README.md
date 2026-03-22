@@ -1,6 +1,6 @@
 <a id="top"></a>
 
-# wechat-agent-channel
+# wechat-codex-agent
 
 [简体中文](#zh-cn) | [English](#en)
 
@@ -85,7 +85,7 @@ npm start
 claude --dangerously-load-development-channels server:wechat
 ```
 
-说明：仓库根目录的 `.mcp.json` 使用的是 Claude 插件/开发 channel 所需格式，适合放在 `~/.claude/plugins/wechat-agent-channel` 下运行。
+说明：仓库根目录的 `.mcp.json` 使用的是 Claude 插件/开发 channel 所需格式，适合放在 `~/.claude/plugins/wechat-codex-agent` 下运行。
 同时它会通过 `node scripts/run-python.js` 自动兼容 macOS 上常见的仅有 `python3` 的环境。
 
 ### 怎么用
@@ -209,7 +209,7 @@ If your default provider is `Claude Code`:
 claude --dangerously-load-development-channels server:wechat
 ```
 
-Note: the repository-level `.mcp.json` uses the Claude plugin/development channel schema, so this repo is meant to run from `~/.claude/plugins/wechat-agent-channel`.
+Note: the repository-level `.mcp.json` uses the Claude plugin/development channel schema, so this repo is meant to run from `~/.claude/plugins/wechat-codex-agent`.
 It also starts Python through `node scripts/run-python.js`, which keeps macOS setups working when only `python3` is available.
 
 ### How to use it

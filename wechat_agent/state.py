@@ -6,9 +6,21 @@ from .constants import DEFAULT_BASE_URL, PROJECT_DIR, SUPPORTED_PROVIDERS
 from .util import ensure_parent, load_json, now_utc_iso
 
 
-STATE_DIR = Path(
-    os.environ.get("WECHAT_AGENT_STATE_DIR", "").strip() or (Path.home() / ".wechat-agent-channel")
-)
+def _resolve_state_dir():
+    override = os.environ.get("WECHAT_AGENT_STATE_DIR", "").strip()
+    if override:
+        return Path(override)
+
+    preferred_dir = Path.home() / ".wechat-codex-agent"
+    legacy_dir = Path.home() / ".wechat-agent-channel"
+
+    # Prefer the new app name, but keep using the legacy directory if it already exists.
+    if preferred_dir.exists() or not legacy_dir.exists():
+        return preferred_dir
+    return legacy_dir
+
+
+STATE_DIR = _resolve_state_dir()
 CREDENTIALS_FILE = STATE_DIR / "wechat" / "account.json"
 APP_CONFIG_FILE = STATE_DIR / "config.json"
 INSTANCE_LOCK_FILE = STATE_DIR / "wechat-agent.lock"
