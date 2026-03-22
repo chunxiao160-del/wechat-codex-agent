@@ -1,3 +1,4 @@
 node_modules/
-sessions/codex-threads.json
-.tmp-codex-ts/
+sessions/*.json
+__pycache__/
+logs/
